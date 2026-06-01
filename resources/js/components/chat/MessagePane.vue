@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ChatChannel, ChatMessage } from '@/types';
-import { nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 
 const props = defineProps<{
     channel: ChatChannel | null;
@@ -9,17 +9,43 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-    (e: 'send', body: string): void;
+    (e: 'send', payload: { body: string; image: File | null }): void;
 }>();
 
 const draft = ref('');
 const scroller = ref<HTMLElement | null>(null);
+const fileInput = ref<HTMLInputElement | null>(null);
+const selectedImage = ref<File | null>(null);
+const previewUrl = ref<string | null>(null);
+
+const canSend = computed(() => Boolean(draft.value.trim() || selectedImage.value));
+
+function pickImage() {
+    fileInput.value?.click();
+}
+
+function onFileChange(e: Event) {
+    const file = (e.target as HTMLInputElement).files?.[0] ?? null;
+    clearPreview();
+    if (file) {
+        selectedImage.value = file;
+        previewUrl.value = URL.createObjectURL(file);
+    }
+}
+
+function clearPreview() {
+    if (previewUrl.value) URL.revokeObjectURL(previewUrl.value);
+    previewUrl.value = null;
+    selectedImage.value = null;
+    if (fileInput.value) fileInput.value.value = '';
+}
 
 function send() {
     const body = draft.value.trim();
-    if (!body) return;
-    emit('send', body);
+    if (!body && !selectedImage.value) return;
+    emit('send', { body, image: selectedImage.value });
     draft.value = '';
+    clearPreview();
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -88,9 +114,25 @@ watch(
                         <span class="font-semibold">{{ message.user.name }}</span>
                         <span class="text-xs text-muted-foreground">{{ formatTime(message.created_at) }}</span>
                     </div>
-                    <p class="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground/90 md:text-sm">
+                    <p
+                        v-if="message.body"
+                        class="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-foreground/90 md:text-sm"
+                    >
                         {{ message.body }}
                     </p>
+                    <a
+                        v-if="message.image_url"
+                        :href="message.image_url"
+                        target="_blank"
+                        rel="noopener"
+                        class="mt-1 block w-fit"
+                    >
+                        <img
+                            :src="message.image_url"
+                            alt="attachment"
+                            class="max-h-80 max-w-full rounded-lg border border-border object-cover"
+                        />
+                    </a>
                 </div>
 
                 <p v-if="!messages.length" class="text-sm text-muted-foreground">
@@ -99,7 +141,39 @@ watch(
             </div>
 
             <div class="shrink-0 border-t border-border p-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] md:pb-3">
-                <div class="flex items-end gap-2 rounded-xl border border-border bg-background px-3 py-2 focus-within:ring-1 focus-within:ring-ring">
+                <!-- Selected image preview -->
+                <div v-if="previewUrl" class="relative mb-2 w-fit">
+                    <img :src="previewUrl" alt="preview" class="max-h-32 rounded-lg border border-border" />
+                    <button
+                        type="button"
+                        class="absolute -right-2 -top-2 flex size-6 items-center justify-center rounded-full bg-foreground text-background"
+                        aria-label="Remove image"
+                        @click="clearPreview"
+                    >
+                        <svg viewBox="0 0 24 24" class="size-4" fill="none" stroke="currentColor" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="flex items-end gap-2 rounded-xl border border-border bg-background px-2 py-2 focus-within:ring-1 focus-within:ring-ring">
+                    <input
+                        ref="fileInput"
+                        type="file"
+                        accept="image/jpeg,image/png,image/gif,image/webp"
+                        class="hidden"
+                        @change="onFileChange"
+                    />
+                    <button
+                        type="button"
+                        class="flex size-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        aria-label="Attach image"
+                        @click="pickImage"
+                    >
+                        <svg viewBox="0 0 24 24" class="size-5" fill="none" stroke="currentColor" stroke-width="2">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3 3 0 1 1 19.5 7.372L8.552 18.32m.009-.01-.01.01m5.699-9.941-7.81 7.81a1.5 1.5 0 0 0 2.112 2.13" />
+                        </svg>
+                    </button>
                     <textarea
                         v-model="draft"
                         rows="1"
@@ -110,7 +184,7 @@ watch(
                     <button
                         type="button"
                         class="shrink-0 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-40 md:py-1.5"
-                        :disabled="!draft.trim()"
+                        :disabled="!canSend"
                         @click="send"
                     >
                         Send

@@ -6,9 +6,7 @@ import type { DefineComponent } from 'vue';
 import { createApp, h } from 'vue';
 import '../css/app.css';
 import { initializeTheme } from './composables/useAppearance';
-
-const csrfToken =
-    document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? '';
+import { xsrfToken } from './lib/api';
 
 window.Pusher = Pusher;
 window.Echo = new Echo({
@@ -19,12 +17,26 @@ window.Echo = new Echo({
     wssPort: import.meta.env.VITE_REVERB_PORT ?? 443,
     forceTLS: (import.meta.env.VITE_REVERB_SCHEME ?? 'https') === 'https',
     enabledTransports: ['ws', 'wss'],
-    // Private/presence channels authorize against the session via /broadcasting/auth.
-    auth: {
-        headers: {
-            'X-CSRF-TOKEN': csrfToken,
+    // Authorize private/presence channels against /broadcasting/auth, reading the
+    // fresh XSRF-TOKEN cookie at subscribe time (a static token goes stale after login).
+    authorizer: (channel: { name: string }) => ({
+        authorize: (socketId: string, callback: (error: boolean, data: unknown) => void) => {
+            fetch('/broadcasting/auth', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    'X-XSRF-TOKEN': xsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                body: JSON.stringify({ socket_id: socketId, channel_name: channel.name }),
+            })
+                .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+                .then((data) => callback(false, data))
+                .catch((error) => callback(true, error));
         },
-    },
+    }),
 });
 
 const appName = import.meta.env.VITE_APP_NAME || 'Laravel';

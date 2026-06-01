@@ -1,6 +1,22 @@
 <script setup lang="ts">
-import { Head, router, useForm, usePage } from '@inertiajs/vue3';
+import { Head, usePage } from '@inertiajs/vue3';
+import {
+    CheckCircle2,
+    Hash,
+    LayoutGrid,
+    Plus,
+    Search,
+    Shield,
+    Users,
+} from 'lucide-vue-next';
 import { computed, ref } from 'vue';
+import UserFormDialog from '@/components/admin/UserFormDialog.vue';
+import WorkspaceCard from '@/components/admin/WorkspaceCard.vue';
+import WorkspaceFormDialog from '@/components/admin/WorkspaceFormDialog.vue';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 type AdminUser = { id: number; name: string; email: string; is_admin: boolean };
 type AdminChannel = {
@@ -25,188 +41,271 @@ const props = defineProps<{
 }>();
 
 const page = usePage();
-const flash = computed(() => (page.props.flash as { success?: string })?.success);
+const flash = computed(
+    () => (page.props.flash as { success?: string })?.success,
+);
 
-// --- Create a client login ---------------------------------------------
-const userForm = useForm({ name: '', email: '', password: '', is_admin: false });
-function createUser() {
-    userForm.post('/admin/users', {
-        preserveScroll: true,
-        onSuccess: () => userForm.reset(),
-    });
+function initials(name: string): string {
+    return name
+        .split(' ')
+        .map((part) => part[0])
+        .filter(Boolean)
+        .slice(0, 2)
+        .join('')
+        .toUpperCase();
 }
 
-// --- Create a workspace -------------------------------------------------
-const workspaceForm = useForm({ name: '' });
-function createWorkspace() {
-    workspaceForm.post('/admin/workspaces', {
-        preserveScroll: true,
-        onSuccess: () => workspaceForm.reset(),
-    });
-}
+const channelCount = computed(() =>
+    props.workspaces.reduce((sum, w) => sum + w.channels.length, 0),
+);
 
-// --- Per-workspace member add ------------------------------------------
-const memberSelect = ref<Record<number, string>>({});
-function addMember(workspace: AdminWorkspace) {
-    const userId = memberSelect.value[workspace.id];
-    if (!userId) return;
-    router.post(
-        `/admin/workspaces/${workspace.id}/members`,
-        { user_id: userId, role: 'member' },
-        { preserveScroll: true, onSuccess: () => (memberSelect.value[workspace.id] = '') },
+const membershipCount = computed(() => {
+    const counts = new Map<number, number>();
+    for (const w of props.workspaces) {
+        for (const m of w.members) {
+            counts.set(m.id, (counts.get(m.id) ?? 0) + 1);
+        }
+    }
+    return counts;
+});
+
+// --- Search ------------------------------------------------------------
+const search = ref('');
+const showArchived = ref(true);
+
+const filteredUsers = computed(() => {
+    const q = search.value.trim().toLowerCase();
+    if (!q) {
+        return props.users;
+    }
+    return props.users.filter(
+        (u) =>
+            u.name.toLowerCase().includes(q) ||
+            u.email.toLowerCase().includes(q),
     );
-}
-function removeMember(workspace: AdminWorkspace, userId: number) {
-    router.delete(`/admin/workspaces/${workspace.id}/members/${userId}`, {
-        preserveScroll: true,
+});
+
+const filteredWorkspaces = computed(() => {
+    const q = search.value.trim().toLowerCase();
+    return props.workspaces.filter((w) => {
+        if (!showArchived.value && w.archived) {
+            return false;
+        }
+        if (!q) {
+            return true;
+        }
+        return (
+            w.name.toLowerCase().includes(q) ||
+            w.slug.toLowerCase().includes(q) ||
+            w.members.some((m) => m.name.toLowerCase().includes(q))
+        );
     });
-}
+});
 
-function nonMembers(workspace: AdminWorkspace): AdminUser[] {
-    const ids = new Set(workspace.members.map((m) => m.id));
-    return props.users.filter((u) => !ids.has(u.id));
-}
+// --- Dialogs -----------------------------------------------------------
+const createUserOpen = ref(false);
+const createWorkspaceOpen = ref(false);
 
-// --- Per-workspace channel create --------------------------------------
-const channelDraft = ref<Record<number, { name: string; topic: string }>>({});
-function draftFor(id: number) {
-    if (!channelDraft.value[id]) channelDraft.value[id] = { name: '', topic: '' };
-    return channelDraft.value[id];
-}
-function createChannel(workspace: AdminWorkspace) {
-    const draft = draftFor(workspace.id);
-    if (!draft.name.trim()) return;
-    router.post(
-        `/admin/workspaces/${workspace.id}/channels`,
-        // New channel includes every current workspace member by default.
-        { name: draft.name, topic: draft.topic, member_ids: workspace.members.map((m) => m.id) },
-        { preserveScroll: true, onSuccess: () => (channelDraft.value[workspace.id] = { name: '', topic: '' }) },
-    );
-}
-function deleteChannel(channel: AdminChannel) {
-    if (!confirm(`Delete #${channel.slug}? This removes its messages.`)) return;
-    router.delete(`/admin/channels/${channel.id}`, { preserveScroll: true });
-}
-
-// Toggle a member in/out of a channel.
-function toggleChannelMember(workspace: AdminWorkspace, channel: AdminChannel, userId: number) {
-    const set = new Set(channel.member_ids);
-    set.has(userId) ? set.delete(userId) : set.add(userId);
-    router.post(
-        `/admin/channels/${channel.id}/members`,
-        { member_ids: [...set] },
-        { preserveScroll: true },
-    );
+const userToEdit = ref<AdminUser | null>(null);
+const editUserOpen = ref(false);
+function openEditUser(user: AdminUser) {
+    userToEdit.value = user;
+    editUserOpen.value = true;
 }
 </script>
 
 <template>
     <Head title="Admin" />
 
-    <div class="mx-auto min-h-screen max-w-5xl bg-background px-6 py-10 text-foreground">
-        <header class="mb-8 flex items-center justify-between">
-            <h1 class="text-2xl font-semibold tracking-tight">Admin console</h1>
-            <a href="/chat" class="text-sm text-muted-foreground hover:text-foreground">← Back to chat</a>
+    <div
+        class="mx-auto min-h-screen max-w-5xl bg-background px-6 py-10 text-foreground"
+    >
+        <!-- Header -->
+        <header class="mb-6 flex flex-wrap items-center justify-between gap-3">
+            <div>
+                <h1 class="text-2xl font-semibold tracking-tight">
+                    Admin console
+                </h1>
+                <p class="mt-1 text-sm text-muted-foreground">
+                    Manage logins, workspaces, and channels.
+                </p>
+            </div>
+            <div class="flex items-center gap-2">
+                <a
+                    href="/chat"
+                    class="text-sm text-muted-foreground hover:text-foreground"
+                    >← Back to chat</a
+                >
+                <Button variant="outline" @click="createUserOpen = true"
+                    ><Plus /> New login</Button
+                >
+                <Button @click="createWorkspaceOpen = true"
+                    ><Plus /> New workspace</Button
+                >
+            </div>
         </header>
 
+        <!-- Flash -->
         <p
             v-if="flash"
-            class="mb-6 rounded-md border border-green-600/30 bg-green-600/10 px-4 py-2 text-sm text-green-700 dark:text-green-400"
+            class="mb-6 flex items-center gap-2 rounded-md border border-green-600/30 bg-green-600/10 px-4 py-2 text-sm text-green-700 dark:text-green-400"
         >
-            {{ flash }}
+            <CheckCircle2 class="size-4" /> {{ flash }}
         </p>
 
-        <div class="grid gap-6 md:grid-cols-2">
-            <!-- Create login -->
-            <section class="rounded-lg border border-border p-5">
-                <h2 class="mb-3 font-semibold">Create a login</h2>
-                <form class="space-y-2" @submit.prevent="createUser">
-                    <input v-model="userForm.name" placeholder="Name" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
-                    <input v-model="userForm.email" type="email" placeholder="Email" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
-                    <input v-model="userForm.password" type="text" placeholder="Password" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
-                    <label class="flex items-center gap-2 text-sm text-muted-foreground">
-                        <input v-model="userForm.is_admin" type="checkbox" /> Admin (full access)
-                    </label>
-                    <button type="submit" :disabled="userForm.processing" class="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
-                        Create login
-                    </button>
-                </form>
-            </section>
-
-            <!-- Create workspace -->
-            <section class="rounded-lg border border-border p-5">
-                <h2 class="mb-3 font-semibold">Create a workspace</h2>
-                <form class="space-y-2" @submit.prevent="createWorkspace">
-                    <input v-model="workspaceForm.name" placeholder="Project name" class="w-full rounded-md border border-border bg-background px-3 py-2 text-sm" />
-                    <button type="submit" :disabled="workspaceForm.processing" class="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
-                        Create workspace
-                    </button>
-                </form>
-                <p class="mt-3 text-xs text-muted-foreground">{{ users.length }} logins · {{ workspaces.length }} workspaces</p>
-            </section>
+        <!-- Stats -->
+        <div class="mb-6 grid grid-cols-3 gap-3">
+            <div class="rounded-lg border border-border p-4">
+                <div
+                    class="flex items-center gap-2 text-xs text-muted-foreground"
+                >
+                    <Users class="size-3.5" /> Logins
+                </div>
+                <p class="mt-1 text-2xl font-semibold">{{ users.length }}</p>
+            </div>
+            <div class="rounded-lg border border-border p-4">
+                <div
+                    class="flex items-center gap-2 text-xs text-muted-foreground"
+                >
+                    <LayoutGrid class="size-3.5" /> Workspaces
+                </div>
+                <p class="mt-1 text-2xl font-semibold">
+                    {{ workspaces.length }}
+                </p>
+            </div>
+            <div class="rounded-lg border border-border p-4">
+                <div
+                    class="flex items-center gap-2 text-xs text-muted-foreground"
+                >
+                    <Hash class="size-3.5" /> Channels
+                </div>
+                <p class="mt-1 text-2xl font-semibold">{{ channelCount }}</p>
+            </div>
         </div>
 
+        <!-- Search -->
+        <div class="relative mb-6">
+            <Search
+                class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+                v-model="search"
+                placeholder="Search people and workspaces…"
+                class="pl-9"
+            />
+        </div>
+
+        <!-- People -->
+        <section class="mb-10">
+            <h2
+                class="mb-3 text-sm font-semibold tracking-wide text-muted-foreground uppercase"
+            >
+                People
+            </h2>
+            <div class="overflow-hidden rounded-lg border border-border">
+                <button
+                    v-for="user in filteredUsers"
+                    :key="user.id"
+                    type="button"
+                    class="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition-colors last:border-b-0 hover:bg-muted"
+                    @click="openEditUser(user)"
+                >
+                    <Avatar class="size-9">
+                        <AvatarFallback class="text-xs">{{
+                            initials(user.name)
+                        }}</AvatarFallback>
+                    </Avatar>
+                    <div class="min-w-0 flex-1">
+                        <p class="flex items-center gap-2 truncate font-medium">
+                            {{ user.name }}
+                            <Badge
+                                v-if="user.is_admin"
+                                variant="secondary"
+                                class="gap-1"
+                                ><Shield class="size-3" /> Admin</Badge
+                            >
+                        </p>
+                        <p class="truncate text-sm text-muted-foreground">
+                            {{ user.email }}
+                        </p>
+                    </div>
+                    <span class="shrink-0 text-xs text-muted-foreground">
+                        {{ membershipCount.get(user.id) ?? 0 }}
+                        {{
+                            (membershipCount.get(user.id) ?? 0) === 1
+                                ? 'workspace'
+                                : 'workspaces'
+                        }}
+                    </span>
+                </button>
+                <p
+                    v-if="filteredUsers.length === 0"
+                    class="px-4 py-6 text-center text-sm text-muted-foreground"
+                >
+                    No people match “{{ search }}”.
+                </p>
+            </div>
+        </section>
+
         <!-- Workspaces -->
-        <section class="mt-10 space-y-6">
-            <article v-for="workspace in workspaces" :key="workspace.id" class="rounded-lg border border-border p-5">
-                <div class="mb-4 flex items-center justify-between">
-                    <h3 class="text-lg font-semibold tracking-tight">{{ workspace.name }}</h3>
-                    <code class="text-xs text-muted-foreground">/{{ workspace.slug }}</code>
-                </div>
+        <section>
+            <div class="mb-3 flex items-center justify-between">
+                <h2
+                    class="text-sm font-semibold tracking-wide text-muted-foreground uppercase"
+                >
+                    Workspaces
+                </h2>
+                <label
+                    class="flex items-center gap-2 text-xs text-muted-foreground"
+                >
+                    <input
+                        v-model="showArchived"
+                        type="checkbox"
+                        class="rounded border-input"
+                    />
+                    Show archived
+                </label>
+            </div>
 
-                <div class="grid gap-6 md:grid-cols-2">
-                    <!-- Members -->
-                    <div>
-                        <h4 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Members</h4>
-                        <ul class="mb-3 space-y-1">
-                            <li v-for="m in workspace.members" :key="m.id" class="flex items-center justify-between text-sm">
-                                <span>{{ m.name }} <span class="text-muted-foreground">· {{ m.role }}</span></span>
-                                <button class="text-xs text-muted-foreground hover:text-destructive" @click="removeMember(workspace, m.id)">remove</button>
-                            </li>
-                        </ul>
-                        <div class="flex gap-2">
-                            <select v-model="memberSelect[workspace.id]" class="flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm">
-                                <option value="">Add member…</option>
-                                <option v-for="u in nonMembers(workspace)" :key="u.id" :value="u.id">{{ u.name }} ({{ u.email }})</option>
-                            </select>
-                            <button class="rounded-md border border-border px-3 text-sm" @click="addMember(workspace)">Add</button>
-                        </div>
-                    </div>
+            <div v-if="filteredWorkspaces.length" class="space-y-6">
+                <WorkspaceCard
+                    v-for="workspace in filteredWorkspaces"
+                    :key="workspace.id"
+                    :workspace="workspace"
+                    :users="users"
+                />
+            </div>
 
-                    <!-- Channels -->
-                    <div>
-                        <h4 class="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground">Channels</h4>
-                        <ul class="mb-3 space-y-3">
-                            <li v-for="channel in workspace.channels" :key="channel.id" class="rounded-md border border-border p-3">
-                                <div class="flex items-center justify-between">
-                                    <span class="font-medium">#{{ channel.slug }}</span>
-                                    <button class="text-xs text-muted-foreground hover:text-destructive" @click="deleteChannel(channel)">delete</button>
-                                </div>
-                                <div class="mt-2 flex flex-wrap gap-1.5">
-                                    <button
-                                        v-for="m in workspace.members"
-                                        :key="m.id"
-                                        type="button"
-                                        class="rounded-full border px-2 py-0.5 text-xs transition-colors"
-                                        :class="channel.member_ids.includes(m.id) ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground'"
-                                        @click="toggleChannelMember(workspace, channel, m.id)"
-                                    >
-                                        {{ m.name }}
-                                    </button>
-                                </div>
-                            </li>
-                        </ul>
-
-                        <form class="space-y-2" @submit.prevent="createChannel(workspace)">
-                            <input v-model="draftFor(workspace.id).name" placeholder="new-channel" class="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm" />
-                            <div class="flex gap-2">
-                                <input v-model="draftFor(workspace.id).topic" placeholder="Topic (optional)" class="flex-1 rounded-md border border-border bg-background px-3 py-1.5 text-sm" />
-                                <button type="submit" class="rounded-md border border-border px-3 text-sm">Add channel</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            </article>
+            <div
+                v-else
+                class="rounded-lg border border-dashed border-border py-12 text-center"
+            >
+                <LayoutGrid class="mx-auto mb-3 size-8 text-muted-foreground" />
+                <p class="text-sm text-muted-foreground">
+                    {{
+                        workspaces.length === 0
+                            ? 'No workspaces yet.'
+                            : 'No workspaces match your search.'
+                    }}
+                </p>
+                <Button
+                    v-if="workspaces.length === 0"
+                    class="mt-4"
+                    @click="createWorkspaceOpen = true"
+                >
+                    <Plus /> Create your first workspace
+                </Button>
+            </div>
         </section>
     </div>
+
+    <!-- Global dialogs -->
+    <UserFormDialog v-model:open="createUserOpen" mode="create" />
+    <UserFormDialog
+        v-if="userToEdit"
+        v-model:open="editUserOpen"
+        mode="edit"
+        :user="userToEdit"
+    />
+    <WorkspaceFormDialog v-model:open="createWorkspaceOpen" mode="create" />
 </template>

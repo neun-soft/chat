@@ -7,6 +7,7 @@ export type ChatMessage = {
     id: number;
     channel_id: number;
     body: string;
+    image_url: string | null;
     created_at: string;
     user: ChatUser;
 };

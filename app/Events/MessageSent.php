@@ -34,17 +34,6 @@ class MessageSent implements ShouldBroadcastNow
      */
     public function broadcastWith(): array
     {
-        $this->message->loadMissing('user:id,name');
-
-        return [
-            'id' => $this->message->id,
-            'channel_id' => $this->message->channel_id,
-            'body' => $this->message->body,
-            'created_at' => $this->message->created_at?->toISOString(),
-            'user' => [
-                'id' => $this->message->user->id,
-                'name' => $this->message->user->name,
-            ],
-        ];
+        return $this->message->toClientArray();
     }
 }

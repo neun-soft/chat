@@ -87,13 +87,21 @@ function selectChannel(channelId: number) {
     mobileNavOpen.value = false; // drop straight into the conversation on mobile
 }
 
-async function sendMessage(body: string) {
+async function sendMessage(payload: { body: string; image: File | null }) {
     if (!activeChannelId.value) return;
     const channelId = activeChannelId.value;
-    const data = await api.post<{ message: ChatMessage }>(
-        `/api/channels/${channelId}/messages`,
-        { body },
-    );
+    const url = `/api/channels/${channelId}/messages`;
+
+    let data: { message: ChatMessage };
+    if (payload.image) {
+        const form = new FormData();
+        if (payload.body) form.append('body', payload.body);
+        form.append('image', payload.image);
+        data = await api.postForm<{ message: ChatMessage }>(url, form);
+    } else {
+        data = await api.post<{ message: ChatMessage }>(url, { body: payload.body });
+    }
+
     // We broadcast toOthers(), so append our own message locally.
     if (!messages.value.some((m) => m.id === data.message.id)) {
         messages.value.push(data.message);

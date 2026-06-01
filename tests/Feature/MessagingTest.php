@@ -4,7 +4,9 @@ use App\Events\MessageSent;
 use App\Models\Channel;
 use App\Models\User;
 use App\Models\Workspace;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Storage;
 
 function makeWorkspaceWithChannel(): array
 {
@@ -68,6 +70,72 @@ test('workspaces index only returns workspaces the user belongs to', function ()
     $slugs = collect($response->json('workspaces'))->pluck('slug');
     expect($slugs)->toContain($mine->slug)
         ->not->toContain($theirs->slug);
+});
+
+test('a member can post an image attachment', function () {
+    Storage::fake('public');
+
+    [$workspace, $channel] = makeWorkspaceWithChannel();
+    $user = User::factory()->create();
+    $workspace->members()->attach($user, ['role' => 'member']);
+    $channel->members()->attach($user);
+
+    $response = $this->actingAs($user)
+        ->postJson("/api/channels/{$channel->id}/messages", [
+            'body' => 'Here is a mockup',
+            'image' => UploadedFile::fake()->image('mockup.png', 800, 600),
+        ])
+        ->assertCreated();
+
+    $response->assertJsonPath('message.body', 'Here is a mockup');
+    expect($response->json('message.image_url'))->not->toBeNull();
+
+    $message = $channel->messages()->first();
+    expect($message->image_path)->not->toBeNull();
+    Storage::disk('public')->assertExists($message->image_path);
+});
+
+test('an image-only message (no text) is allowed', function () {
+    Storage::fake('public');
+
+    [$workspace, $channel] = makeWorkspaceWithChannel();
+    $user = User::factory()->create();
+    $workspace->members()->attach($user, ['role' => 'member']);
+    $channel->members()->attach($user);
+
+    $this->actingAs($user)
+        ->postJson("/api/channels/{$channel->id}/messages", [
+            'image' => UploadedFile::fake()->image('shot.jpg'),
+        ])
+        ->assertCreated();
+
+    expect($channel->messages()->count())->toBe(1);
+});
+
+test('an empty message (no text, no image) is rejected', function () {
+    [$workspace, $channel] = makeWorkspaceWithChannel();
+    $user = User::factory()->create();
+    $workspace->members()->attach($user, ['role' => 'member']);
+    $channel->members()->attach($user);
+
+    $this->actingAs($user)
+        ->postJson("/api/channels/{$channel->id}/messages", [])
+        ->assertStatus(422);
+});
+
+test('a non-image file is rejected', function () {
+    Storage::fake('public');
+
+    [$workspace, $channel] = makeWorkspaceWithChannel();
+    $user = User::factory()->create();
+    $workspace->members()->attach($user, ['role' => 'member']);
+    $channel->members()->attach($user);
+
+    $this->actingAs($user)
+        ->postJson("/api/channels/{$channel->id}/messages", [
+            'image' => UploadedFile::fake()->create('virus.pdf', 100, 'application/pdf'),
+        ])
+        ->assertStatus(422);
 });
 
 test('posting a message broadcasts MessageSent', function () {

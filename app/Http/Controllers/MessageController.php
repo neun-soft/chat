@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Events\MessageSent;
 use App\Models\Channel;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class MessageController extends Controller
 {
@@ -22,13 +23,7 @@ class MessageController extends Controller
         $messages = $query->limit(50)->get()->reverse()->values();
 
         return response()->json([
-            'messages' => $messages->map(fn ($m) => [
-                'id' => $m->id,
-                'channel_id' => $m->channel_id,
-                'body' => $m->body,
-                'created_at' => $m->created_at?->toISOString(),
-                'user' => ['id' => $m->user->id, 'name' => $m->user->name],
-            ]),
+            'messages' => $messages->map(fn ($m) => $m->toClientArray()),
         ]);
     }
 
@@ -37,12 +32,25 @@ class MessageController extends Controller
         $this->authorizeChannel($request, $channel);
 
         $validated = $request->validate([
-            'body' => ['required', 'string', 'max:5000'],
+            'body' => ['nullable', 'string', 'max:5000'],
+            'image' => ['nullable', 'image', 'mimes:jpeg,png,gif,webp', 'max:5120'], // 5MB
         ]);
+
+        // A message must carry text, an image, or both.
+        if (blank($validated['body'] ?? null) && ! $request->hasFile('image')) {
+            throw ValidationException::withMessages([
+                'body' => 'Type a message or attach an image.',
+            ]);
+        }
+
+        $imagePath = $request->hasFile('image')
+            ? $request->file('image')->store('attachments', 'public')
+            : null;
 
         $message = $channel->messages()->create([
             'user_id' => $request->user()->id,
-            'body' => $validated['body'],
+            'body' => $validated['body'] ?? '',
+            'image_path' => $imagePath,
         ]);
 
         // Real-time fan-out is best-effort: the message is already persisted, so
@@ -53,17 +61,7 @@ class MessageController extends Controller
             report($e);
         }
 
-        $message->load('user:id,name');
-
-        return response()->json([
-            'message' => [
-                'id' => $message->id,
-                'channel_id' => $message->channel_id,
-                'body' => $message->body,
-                'created_at' => $message->created_at?->toISOString(),
-                'user' => ['id' => $message->user->id, 'name' => $message->user->name],
-            ],
-        ], 201);
+        return response()->json(['message' => $message->toClientArray()], 201);
     }
 
     private function authorizeChannel(Request $request, Channel $channel): void
